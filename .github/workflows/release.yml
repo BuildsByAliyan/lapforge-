@@ -1,0 +1,97 @@
+name: Release
+
+# Runs when a version tag such as v4.0.0 is pushed:
+#   git tag v4.0.0
+#   git push origin v4.0.0
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build LapForge.exe and publish the release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package with build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,build]"
+
+      - name: Check that the tag matches the version in the code
+        shell: bash
+        run: |
+          VERSION=$(python -c "import lapforge; print(lapforge.__version__)")
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME but lapforge/__init__.py says version $VERSION. Fix one of them and push the tag again."
+            exit 1
+          fi
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build LapForge.exe
+        shell: cmd
+        run: |
+          > _entry.py echo import sys
+          >> _entry.py echo from lapforge.app import run
+          >> _entry.py echo sys.exit(run())
+          python -m PyInstaller --noconfirm --clean --onefile --console --name LapForge --paths . --collect-submodules lapforge _entry.py
+
+      - name: Smoke test the exe
+        run: dist\LapForge.exe --version
+
+      - name: Write the SHA-256 checksum
+        shell: bash
+        run: |
+          HASH=$(sha256sum dist/LapForge.exe | cut -d " " -f 1)
+          echo "$HASH  LapForge.exe" > dist/LapForge.exe.sha256
+          echo "SHA-256: $HASH"
+          echo "FILE_HASH=$HASH" >> "$GITHUB_ENV"
+
+      - name: Write the release notes
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > release-notes.md <<EOF
+          ## LapForge $VERSION
+
+          LapForge shows every detail of your Windows laptop, checks its health, and helps you clean it and speed it up. It only looks at your own computer.
+
+          ### How to use it
+
+          **Download LapForge.exe and double-click it.** The menu opens. There is nothing to install and you do not need Python.
+
+          ### Windows may show a warning
+
+          Windows may show a blue "Windows protected your PC" screen because the file is new and not code-signed. Choose **More info**, then **Run anyway**. You can verify the download with the published SHA-256 checksum below (the file LapForge.exe.sha256 is attached too).
+
+          ### SHA-256 checksum
+
+          $FILE_HASH  LapForge.exe
+
+          To check it in PowerShell, run: Get-FileHash .\LapForge.exe -Algorithm SHA256
+          EOF
+
+      - name: Create the GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/LapForge.exe \
+            dist/LapForge.exe.sha256 \
+            --title "LapForge ${GITHUB_REF_NAME#v}" \
+            --notes-file release-notes.md \
+            --verify-tag

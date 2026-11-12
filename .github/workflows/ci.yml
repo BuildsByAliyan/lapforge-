@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package with test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Command works
+        run: lapforge --version
+
+      - name: Smoke test - command list
+        run: lapforge commands
+
+      - name: Smoke test - dashboard
+        run: lapforge dashboard
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  build-exe:
+    name: Build single .exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package with build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build]"
+
+      - name: Build exe
+        shell: cmd
+        run: |
+          > _entry.py echo import sys
+          >> _entry.py echo from lapforge.app import run
+          >> _entry.py echo sys.exit(run())
+          python -m PyInstaller --noconfirm --clean --onefile --console --name LapForge --paths . --collect-submodules lapforge _entry.py
+
+      - name: Smoke test exe - version
+        run: dist\LapForge.exe --version
+
+      - name: Smoke test exe - command list
+        run: dist\LapForge.exe commands
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lapforge-windows-exe
+          path: dist/LapForge.exe
+          if-no-files-found: error
